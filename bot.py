@@ -4,7 +4,8 @@ import logging
 from datetime import datetime
 import pytz
 
-from telegram import Bot
+from telegram import Bot, Update
+from telegram.ext import Application, CommandHandler, ContextTypes
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # ─── НАСТРОЙКИ ───────────────────────────────────────────────
@@ -343,25 +344,20 @@ def build_message(month_name: str) -> str:
     data = SCHEDULE.get(month_name)
     if not data:
         return None
-
     lines = [f"🔔 *Напоминание о плановом ТО — {month_name.capitalize()}*\n"]
     lines.append("В этом месяце необходимо выполнить:\n")
-
     to3 = data.get("ТО-3", [])
     to4 = data.get("ТО-4", [])
-
     if to3:
         lines.append("📋 *ТО-3* (квартальное):")
-        for sys in to3:
-            lines.append(f"  • {sys}")
+        for s in to3:
+            lines.append(f"  • {s}")
         lines.append("")
-
     if to4:
         lines.append("📋 *ТО-4* (годовое):")
-        for sys in to4:
-            lines.append(f"  • {sys}")
+        for s in to4:
+            lines.append(f"  • {s}")
         lines.append("")
-
     lines.append("✅ Просьба подтвердить назначение ответственных и сроки выполнения.")
     return "\n".join(lines)
 
@@ -370,28 +366,68 @@ async def send_reminder():
     tz = pytz.timezone(TIMEZONE)
     now = datetime.now(tz)
     month_name = MONTH_NAMES.get(now.month)
-
-    log.info(f"Отправка напоминания за {month_name} ({now.strftime('%d.%m.%Y')})")
-
+    log.info(f"Отправка напоминания за {month_name}")
     text = build_message(month_name)
     if not text:
-        log.warning(f"Нет данных для месяца: {month_name}")
         return
-
     bot = Bot(token=BOT_TOKEN)
-    await bot.send_message(
-        chat_id=CHAT_ID,
-        text=text,
-        parse_mode="Markdown",
+    await bot.send_message(chat_id=CHAT_ID, text=text, parse_mode="Markdown")
+
+
+# ─── ОБРАБОТЧИКИ КОМАНД ──────────────────────────────────────
+
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "👋 *Бот ППР Сколтех*\n\n"
+        "Доступные команды:\n"
+        "/to — ТО-3 и ТО-4 на текущий месяц\n"
+        "/month май — ТО-3 и ТО-4 на конкретный месяц\n"
+        "/help — справка",
+        parse_mode="Markdown"
     )
-    log.info("Сообщение успешно отправлено")
+
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "📖 *Справка*\n\n"
+        "/to — показать ТО-3 и ТО-4 на *текущий* месяц\n"
+        "/month январь — показать ТО-3 и ТО-4 на *указанный* месяц\n\n"
+        "Автоматические напоминания — каждый понедельник в 09:00 МСК.",
+        parse_mode="Markdown"
+    )
+
+async def cmd_to(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    tz = pytz.timezone(TIMEZONE)
+    now = datetime.now(tz)
+    month_name = MONTH_NAMES.get(now.month)
+    text = build_message(month_name)
+    if not text:
+        await update.message.reply_text(f"Нет данных для месяца: {month_name}")
+        return
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+async def cmd_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text(
+            "Укажите месяц, например:\n/month май\n/month октябрь"
+        )
+        return
+    month_name = " ".join(context.args).strip().lower()
+    text = build_message(month_name)
+    if not text:
+        valid = ", ".join(MONTH_NAMES.values())
+        await update.message.reply_text(
+            f"❌ Месяц *{month_name}* не найден.\n\nДоступные: {valid}",
+            parse_mode="Markdown"
+        )
+        return
+    await update.message.reply_text(text, parse_mode="Markdown")
 
 
 async def main():
     tz = pytz.timezone(TIMEZONE)
-    scheduler = AsyncIOScheduler(timezone=tz)
 
-    # Каждый понедельник в 09:00 по Москве
+    # Планировщик
+    scheduler = AsyncIOScheduler(timezone=tz)
     scheduler.add_job(
         send_reminder,
         trigger="cron",
@@ -399,21 +435,29 @@ async def main():
         hour=9,
         minute=0,
     )
-
     scheduler.start()
-    log.info("Бот запущен. Расписание: каждый понедельник в 09:00 МСК")
+    log.info("Планировщик запущен: каждый понедельник в 09:00 МСК")
 
-    # Отправить приветственное сообщение при старте
+    # Telegram Application
+    app = Application.builder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("help", cmd_help))
+    app.add_handler(CommandHandler("to", cmd_to))
+    app.add_handler(CommandHandler("month", cmd_month))
+
+    # Приветствие при старте
     bot = Bot(token=BOT_TOKEN)
     await bot.send_message(
         chat_id=CHAT_ID,
-        text="✅ *Бот ППР Сколтех запущен!*\n\nКаждый понедельник в 09:00 МСК я буду напоминать о плановом ТО-3 и ТО-4 на текущий месяц.",
+        text="✅ *Бот ППР Сколтех обновлён!*\n\n"
+             "/to — ТО-3 и ТО-4 на текущий месяц\n"
+             "/month май — ТО-3 и ТО-4 на конкретный месяц\n\n"
+             "Автонапоминания: каждый понедельник в 09:00 МСК 🔔",
         parse_mode="Markdown",
     )
 
-    # Держим процесс живым
-    while True:
-        await asyncio.sleep(60)
+    log.info("Бот запущен, ожидание команд...")
+    await app.run_polling(close_loop=False)
 
 
 if __name__ == "__main__":
