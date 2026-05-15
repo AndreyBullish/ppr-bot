@@ -12,6 +12,11 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "8807180333:AAETatngFRmz5WogYXyuTN2oFequ
 CHAT_ID   = os.environ.get("CHAT_ID",   "5759230833")
 TIMEZONE  = "Europe/Moscow"
 
+# ─── АДМИНИСТРАТОР И ХРАНИЛИЩЕ ПОЛЬЗОВАТЕЛЕЙ ────────────────
+ADMIN_ID = os.environ.get("ADMIN_ID", "5759230833")  # твой chat_id
+known_users: set = set()  # chat_id всех кто писал боту
+
+
 # ─── РАСПИСАНИЕ ТО-3 и ТО-4 по месяцам ──────────────────────
 SCHEDULE = {
     "январь": {
@@ -1540,7 +1545,57 @@ def find_system(query: str):
 
 # ─── ОБРАБОТЧИКИ КОМАНД ──────────────────────────────────────
 
+
+def track_user(update):
+    """Запоминаем chat_id пользователя."""
+    if update and update.effective_chat:
+        uid = update.effective_chat.id
+        if uid not in known_users:
+            known_users.add(uid)
+            log.info(f"Новый пользователь: {uid}")
+
+async def cmd_broadcast(update, context):
+    """Рассылка сообщения всем пользователям. Только для админа."""
+    uid = str(update.effective_chat.id)
+    if uid != ADMIN_ID:
+        await update.message.reply_text("❌ У вас нет доступа к этой команде.")
+        return
+    if not context.args:
+        await update.message.reply_text(
+            "Введите текст сообщения после команды.\n"
+            "Пример: /broadcast Привет всем!"
+        )
+        return
+    text = " ".join(context.args)
+    if not known_users:
+        await update.message.reply_text("Список пользователей пуст — никто ещё не писал боту.")
+        return
+    success, failed = 0, 0
+    for chat_id in known_users:
+        try:
+            await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
+            success += 1
+        except Exception as e:
+            log.warning(f"Не удалось отправить {chat_id}: {e}")
+            failed += 1
+    await update.message.reply_text(
+        f"✅ Отправлено: {success}\n❌ Не доставлено: {failed}\n👥 Всего пользователей: {len(known_users)}"
+    )
+
+async def cmd_users(update, context):
+    """Показать количество пользователей. Только для админа."""
+    uid = str(update.effective_chat.id)
+    if uid != ADMIN_ID:
+        await update.message.reply_text("❌ У вас нет доступа к этой команде.")
+        return
+    await update.message.reply_text(
+        f"👥 Пользователей в базе: *{len(known_users)}*\n"
+        f"ID: {', '.join(str(u) for u in known_users) if known_users else 'пусто'}",
+        parse_mode="Markdown"
+    )
+
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    track_user(update)
     await update.message.reply_text(
         "👋 *Бот ППР Сколтех*\n\n"
         "Доступные команды:\n"
@@ -1553,6 +1608,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    track_user(update)
     await update.message.reply_text(
         "📖 *Справка*\n\n"
         "/to — показать ТО на *текущий* месяц\n"
@@ -1571,6 +1627,7 @@ def extract_code(system_name):
     return m.group(1) if m else "—"
 
 async def cmd_codes(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    track_user(update)
     import re
     lines_out = ["📋 *Коды инженерных систем*\n"]
     for system in WORKS_DATA.keys():
@@ -1581,6 +1638,7 @@ async def cmd_codes(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines_out), parse_mode="Markdown")
 
 async def cmd_systems(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    track_user(update)
     lines_out = ["📋 *Доступные системы для команды /works:*\n"]
     for system, to_data in WORKS_DATA.items():
         to_list = ", ".join(to_data.keys())
@@ -1589,6 +1647,7 @@ async def cmd_systems(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_to(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    track_user(update)
     tz = pytz.timezone(TIMEZONE)
     now = datetime.now(tz)
     month_name = MONTH_NAMES.get(now.month)
@@ -1599,6 +1658,7 @@ async def cmd_to(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode="Markdown")
 
 async def cmd_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    track_user(update)
     if not context.args:
         await update.message.reply_text(
             "Укажите месяц, например:\n/month май\n/month октябрь"
@@ -1616,6 +1676,7 @@ async def cmd_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode="Markdown")
 
 async def cmd_works(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    track_user(update)
     """
     /works ТО1 OV2
     /works ТО3 отопление
@@ -1704,6 +1765,8 @@ def main():
     app.add_handler(CommandHandler("works", cmd_works))
     app.add_handler(CommandHandler("systems", cmd_systems))
     app.add_handler(CommandHandler("codes", cmd_codes))
+    app.add_handler(CommandHandler("broadcast", cmd_broadcast))
+    app.add_handler(CommandHandler("users", cmd_users))
 
     # Планировщик на фоновом потоке
     scheduler = BackgroundScheduler(timezone=tz)
