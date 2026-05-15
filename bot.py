@@ -1607,13 +1607,14 @@ async def cmd_works(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    to_arg = context.args[0].upper().replace("-", "").replace("ТО", "ТО")
-    # Нормализуем: ТО-1 / то1 / ТО1 -> ТО1
-    to_arg = to_arg.strip()
-    if to_arg.startswith("ТО") and len(to_arg) == 3:
-        pass  # уже в нужном формате
-    elif to_arg in ("1", "2", "3", "4"):
-        to_arg = f"ТО{to_arg}"
+    raw = context.args[0].strip().replace("-", "").upper()
+    # Заменяем латинские T/O на кириллические (другая раскладка клавиатуры)
+    raw = raw.replace("T", "Т").replace("O", "О")
+    # Нормализуем: ТО1 / ТО-1 / то1 / 1 -> ТО1
+    if raw in ("1", "2", "3", "4"):
+        to_arg = f"ТО{raw}"
+    else:
+        to_arg = raw
 
     system_query = " ".join(context.args[1:])
     system_name = find_system(system_query)
